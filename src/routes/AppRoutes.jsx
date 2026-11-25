@@ -28,6 +28,9 @@ const Delivery = lazy(() => import('../features/delivery/pages/Delivery'));
 // Payouts Feature
 const Payouts = lazy(() => import('../features/payouts/pages/Payouts'));
 
+// Account Records Feature (deleted-accounts archive + block history)
+const AccountRecords = lazy(() => import('../features/accounts/pages/AccountRecords'));
+
 // Complaints Feature
 const Complaints = lazy(() => import('../features/complaints/pages/Complaints'));
 
@@ -70,6 +73,9 @@ export default function AppRoutes() {
           <Route path={ROUTES.PAYOUTS} element={<Payouts defaultTab="payouts" />} />
 
           <Route path={ROUTES.COMPLAINTS} element={<Complaints />} />
+
+          <Route path={ROUTES.DELETED_ACCOUNTS} element={<AccountRecords defaultTab="deleted" />} />
+          <Route path={ROUTES.BLOCK_HISTORY} element={<AccountRecords defaultTab="blocks" />} />
 
           <Route path={ROUTES.ORDERS} element={<Navigate to={ROUTES.DASHBOARD} replace />} />
           <Route path={ROUTES.ORDERS_MONITORING} element={<Navigate to={ROUTES.DASHBOARD} replace />} />

@@ -5,6 +5,16 @@ import WorkflowRulesBar from "../../../components/common/WorkflowRulesBar";
 import EmptyState from "../../../components/common/EmptyState";
 import SegmentedTabs from "../../../components/common/SegmentedTabs";
 import ChangeRequestsPanel from "../components/ChangeRequestsPanel";
+import BlockAccountModal from "../../accounts/components/BlockAccountModal";
+import UnblockAccountModal from "../../accounts/components/UnblockAccountModal";
+import {
+  BlockedBadge,
+  BlockedReasonLine,
+  BlockToggleButton,
+  PayoutsHoldBadge,
+  ReturningUserBadge,
+} from "../../accounts/components/AccountFlags";
+import { readAccountFlags } from "../../accounts/utils/accountFlags";
 import {
   Calendar,
   RefreshCw,
@@ -43,6 +53,8 @@ import {
   approveDeliveryKyc,
   rejectDeliveryKyc,
   exportDeliveryPdf,
+  blockDeliveryPartner,
+  unblockDeliveryPartner,
 } from "../services/deliveryPartnerKycService";
 
 const formatDate = (value) => {
@@ -188,6 +200,9 @@ const normalizeDeliveryPartner = (item) => {
       : [],
     // Status badge text comes from applicationState (not kycStatus)
     status: getStateMeta(applicationState).label,
+    // blocked, blockedReason, blockedAt, payoutsOnHold,
+    // previouslyDeleted, previousDeletionCount, lastDeletedAt
+    ...readAccountFlags(item),
   };
 };
 
@@ -229,11 +244,17 @@ const deliveryTabs = [
   { id: "changes", label: "Change Requests", icon: GitPullRequest },
 ];
 
+// Allows deep links such as /management/delivery?search=<phone>
+const getInitialSearch = () =>
+  typeof window === "undefined"
+    ? ""
+    : new URLSearchParams(window.location.search).get("search") || "";
+
 export default function Delivery({ embedded = false }) {
   const [activeTab, setActiveTab] = useState("all"); // "all" | "pending" | "changes"
   const [stateFilter, setStateFilter] = useState(""); // "" | APPROVED | UNDER_REVIEW | REJECTED | DRAFT
   const [onlineFilter, setOnlineFilter] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(getInitialSearch);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -266,6 +287,9 @@ export default function Delivery({ embedded = false }) {
   const [showRejectBox, setShowRejectBox] = useState(false);
   const [isExportingCsv, setIsExportingCsv] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+
+  // Block / Unblock modal state: mode is "block" | "unblock" | null
+  const [moderation, setModeration] = useState({ account: null, mode: null });
 
   const fetchDeliveryPartners = useCallback(
     async (
@@ -412,6 +436,36 @@ export default function Delivery({ embedded = false }) {
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await fetchDeliveryPartners(activeTab, stateFilter, onlineFilter, currentPage, searchQuery);
+  };
+
+  // ---- Block / Unblock (uses the rider's USER id) ----
+  const openModeration = (account) => {
+    setModeration({ account, mode: account.blocked ? "unblock" : "block" });
+  };
+
+  const closeModeration = () => setModeration({ account: null, mode: null });
+
+  const reloadPartners = () =>
+    fetchDeliveryPartners(activeTab, stateFilter, onlineFilter, currentPage, searchQuery);
+
+  // Errors are thrown so the modal can display them inline.
+  const handleBlockConfirm = async ({ reason, holdPayouts }) => {
+    const userId = moderation.account?.userId;
+    if (!userId) throw new Error("Delivery partner user ID is missing.");
+
+    await blockDeliveryPartner(userId, { reason, holdPayouts });
+    closeModeration();
+    // Server takes the rider offline on block; the reload reflects that.
+    await reloadPartners();
+  };
+
+  const handleUnblockConfirm = async ({ note }) => {
+    const userId = moderation.account?.userId;
+    if (!userId) throw new Error("Delivery partner user ID is missing.");
+
+    await unblockDeliveryPartner(userId, { note });
+    closeModeration();
+    await reloadPartners();
   };
 
   const handleExportCsv = async () => {
@@ -1007,6 +1061,14 @@ export default function Delivery({ embedded = false }) {
                                     <span>{app.phone}</span>
                                   </div>
                                 )}
+                                {(app.blocked || app.previouslyDeleted) && (
+                                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                    <BlockedBadge account={app} />
+                                    <PayoutsHoldBadge account={app} />
+                                    <ReturningUserBadge account={app} role="DELIVERY" phone={app.phone} />
+                                  </div>
+                                )}
+                                <BlockedReasonLine account={app} />
                               </div>
                             </td>
 
@@ -1064,6 +1126,7 @@ export default function Delivery({ embedded = false }) {
 
                             {/* 7. Actions */}
                             <td className="py-4 px-5 text-right">
+                              <div className="flex items-center justify-end gap-2 flex-wrap">
                               {isUnderReview(app) ? (
                                 <button
                                   type="button"
@@ -1085,6 +1148,12 @@ export default function Delivery({ embedded = false }) {
                                   {isKycApproved(app) ? "View Doc" : "View Details"}
                                 </button>
                               )}
+                              <BlockToggleButton
+                                blocked={app.blocked}
+                                onClick={() => openModeration(app)}
+                                disabled={!app.userId}
+                              />
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -1113,6 +1182,14 @@ export default function Delivery({ embedded = false }) {
                                 <span>{app.phone}</span>
                               </div>
                             )}
+                            {(app.blocked || app.previouslyDeleted) && (
+                              <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                <BlockedBadge account={app} />
+                                <PayoutsHoldBadge account={app} />
+                                <ReturningUserBadge account={app} role="DELIVERY" phone={app.phone} />
+                              </div>
+                            )}
+                            <BlockedReasonLine account={app} className="mt-1" />
                           </div>
 
                           {/* Separate Badges for Presence & KYC */}
@@ -1173,6 +1250,13 @@ export default function Delivery({ embedded = false }) {
                             </button>
                           )}
                         </div>
+
+                        <BlockToggleButton
+                          blocked={app.blocked}
+                          onClick={() => openModeration(app)}
+                          disabled={!app.userId}
+                          fullWidth
+                        />
                       </div>
                     ))}
                   </div>
@@ -1853,6 +1937,31 @@ export default function Delivery({ embedded = false }) {
           </div>
         </div>
       )}
+
+      {/* Block (reason required) / Unblock (note optional) */}
+      <BlockAccountModal
+        isOpen={moderation.mode === "block"}
+        account={{
+          name: moderation.account?.fullName,
+          phone: moderation.account?.phone,
+        }}
+        roleLabel="delivery partner"
+        onClose={closeModeration}
+        onConfirm={handleBlockConfirm}
+        onStale={reloadPartners}
+      />
+      <UnblockAccountModal
+        isOpen={moderation.mode === "unblock"}
+        account={{
+          name: moderation.account?.fullName,
+          phone: moderation.account?.phone,
+          blockedReason: moderation.account?.blockedReason,
+        }}
+        roleLabel="delivery partner"
+        onClose={closeModeration}
+        onConfirm={handleUnblockConfirm}
+        onStale={reloadPartners}
+      />
     </div>
   );
 }

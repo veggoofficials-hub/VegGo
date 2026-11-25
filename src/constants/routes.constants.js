@@ -49,6 +49,10 @@ export const ROUTES = Object.freeze({
   COUPONS: '/marketing/coupons',
   BANNERS: '/marketing/banners',
 
+  // Account Records (deleted-accounts archive + block history)
+  DELETED_ACCOUNTS: '/accounts/deleted',
+  BLOCK_HISTORY: '/accounts/blocks',
+
   // Other Modules
   LOGISTICS: '/logistics',
   ANALYTICS: '/analytics',

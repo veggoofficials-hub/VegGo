@@ -22,7 +22,9 @@ import {
   MessageSquareWarning,
   Megaphone,
   Ticket,
-  Image as ImageIcon
+  Image as ImageIcon,
+  UserX,
+  History as HistoryIcon
 } from "lucide-react";
 import LogoutModal from "../components/common/LogoutModal";
 import { clearAuthSession } from "../utils/auth";
@@ -141,6 +143,30 @@ const menuGroups = [
     bgHover: "group-hover/item:text-emerald-800",
     path: ROUTES.COMPLAINTS,
     subItems: [],
+  },
+  {
+    id: "accounts",
+    label: "Account Records",
+    icon: UserX,
+    color: "text-emerald-700",
+    bgHover: "group-hover/item:text-emerald-800",
+    path: ROUTES.DELETED_ACCOUNTS,
+    subItems: [
+      {
+        id: "accounts-deleted",
+        label: "Deleted Accounts",
+        path: ROUTES.DELETED_ACCOUNTS,
+        icon: UserX,
+        color: "text-emerald-600",
+      },
+      {
+        id: "accounts-blocks",
+        label: "Block History",
+        path: ROUTES.BLOCK_HISTORY,
+        icon: HistoryIcon,
+        color: "text-emerald-600",
+      },
+    ],
   },
   {
     id: "settings",

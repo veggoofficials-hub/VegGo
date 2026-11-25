@@ -4,6 +4,16 @@ import PageHeader from "../../../components/common/PageHeader";
 import SegmentedTabs from "../../../components/common/SegmentedTabs";
 import WorkflowRulesBar from "../../../components/common/WorkflowRulesBar";
 import EmptyState from "../../../components/common/EmptyState";
+import BlockAccountModal from "../../accounts/components/BlockAccountModal";
+import UnblockAccountModal from "../../accounts/components/UnblockAccountModal";
+import {
+  BlockedBadge,
+  BlockedReasonLine,
+  BlockToggleButton,
+  PayoutsHoldBadge,
+  ReturningUserBadge,
+} from "../../accounts/components/AccountFlags";
+import { readAccountFlags } from "../../accounts/utils/accountFlags";
 
 import {
   Calendar,
@@ -38,6 +48,8 @@ import {
   getVendorKycDetail,
   approveVendorKyc,
   rejectVendorKyc,
+  blockVendor,
+  unblockVendor,
 } from "../services/vendorKycService";
 
 const formatDate = (value) => {
@@ -120,6 +132,9 @@ const normalizeVendor = (item) => {
     documents: Array.isArray(item?.documents) ? item.documents : [],
     allDocumentsUploaded: Boolean(item?.allDocumentsUploaded),
     status: displayStatus,
+    // blocked, blockedReason, blockedAt, payoutsOnHold,
+    // previouslyDeleted, previousDeletionCount, lastDeletedAt
+    ...readAccountFlags(item),
   };
 };
 
@@ -128,11 +143,17 @@ const vendorTabs = [
   { id: "pending", label: "KYC Pending", icon: Clock },
 ];
 
+// Allows deep links such as /management/vendors?search=<phone>
+const getInitialSearch = () =>
+  typeof window === "undefined"
+    ? ""
+    : new URLSearchParams(window.location.search).get("search") || "";
+
 export default function Vendor({ embedded = false }) {
   const [activeTab, setActiveTab] = useState("all"); // "all" | "pending"
   const [approvedFilter, setApprovedFilter] = useState(false);
   const [onlineFilter, setOnlineFilter] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(getInitialSearch);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -161,6 +182,9 @@ export default function Vendor({ embedded = false }) {
   const [showRejectBox, setShowRejectBox] = useState(false);
   const [isExportingCsv, setIsExportingCsv] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+
+  // Block / Unblock modal state: mode is "block" | "unblock" | null
+  const [moderation, setModeration] = useState({ account: null, mode: null });
 
   const fetchVendors = useCallback(
     async (
@@ -301,6 +325,36 @@ export default function Vendor({ embedded = false }) {
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await fetchVendors(activeTab, approvedFilter, onlineFilter, currentPage, searchQuery);
+  };
+
+  // ---- Block / Unblock (uses the vendor's USER id, not the shop id) ----
+  const openModeration = (account) => {
+    setModeration({ account, mode: account.blocked ? "unblock" : "block" });
+  };
+
+  const closeModeration = () => setModeration({ account: null, mode: null });
+
+  const reloadVendors = () =>
+    fetchVendors(activeTab, approvedFilter, onlineFilter, currentPage, searchQuery);
+
+  // Errors are thrown so the modal can display them inline.
+  const handleBlockConfirm = async ({ reason, holdPayouts }) => {
+    const userId = moderation.account?.ownerUserId;
+    if (!userId) throw new Error("Vendor user ID is missing.");
+
+    await blockVendor(userId, { reason, holdPayouts });
+    closeModeration();
+    // Server takes the shop offline on block; the reload reflects that.
+    await reloadVendors();
+  };
+
+  const handleUnblockConfirm = async ({ note }) => {
+    const userId = moderation.account?.ownerUserId;
+    if (!userId) throw new Error("Vendor user ID is missing.");
+
+    await unblockVendor(userId, { note });
+    closeModeration();
+    await reloadVendors();
   };
 
   const handleExportCsv = async () => {
@@ -867,6 +921,19 @@ export default function Vendor({ embedded = false }) {
                                 <span className="truncate max-w-[190px]">{app.email}</span>
                               </div>
                             )}
+
+                            {(app.blocked || app.previouslyDeleted) && (
+                              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                <BlockedBadge account={app} />
+                                <PayoutsHoldBadge account={app} />
+                                <ReturningUserBadge
+                                  account={app}
+                                  role="VENDOR"
+                                  phone={app.loginPhone || (app.businessPhone !== "-" ? app.businessPhone : "")}
+                                />
+                              </div>
+                            )}
+                            <BlockedReasonLine account={app} />
                           </div>
                         </td>
 
@@ -940,6 +1007,7 @@ export default function Vendor({ embedded = false }) {
 
                         {/* 7. Actions */}
                         <td className="py-4 px-5 text-right">
+                          <div className="flex items-center justify-end gap-2 flex-wrap">
                           {isKycApproved(app) ? (
                             <button
                               type="button"
@@ -961,6 +1029,12 @@ export default function Vendor({ embedded = false }) {
                               Inspect KYC
                             </button>
                           )}
+                          <BlockToggleButton
+                            blocked={app.blocked}
+                            onClick={() => openModeration(app)}
+                            disabled={!app.ownerUserId}
+                          />
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1098,6 +1172,25 @@ export default function Vendor({ embedded = false }) {
                         Inspect KYC
                       </button>
                     )}
+
+                    {(app.blocked || app.previouslyDeleted) && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <BlockedBadge account={app} />
+                        <PayoutsHoldBadge account={app} />
+                        <ReturningUserBadge
+                          account={app}
+                          role="VENDOR"
+                          phone={app.loginPhone || (app.businessPhone !== "-" ? app.businessPhone : "")}
+                        />
+                      </div>
+                    )}
+                    <BlockedReasonLine account={app} />
+                    <BlockToggleButton
+                      blocked={app.blocked}
+                      onClick={() => openModeration(app)}
+                      disabled={!app.ownerUserId}
+                      fullWidth
+                    />
                   </div>
                 ))}
               </div>
@@ -1661,6 +1754,31 @@ export default function Vendor({ embedded = false }) {
           </div>
         </div>
       )}
+
+      {/* Block (reason required) / Unblock (note optional) */}
+      <BlockAccountModal
+        isOpen={moderation.mode === "block"}
+        account={{
+          name: moderation.account?.ownerFullName || moderation.account?.businessName,
+          phone: moderation.account?.loginPhone,
+        }}
+        roleLabel="vendor"
+        onClose={closeModeration}
+        onConfirm={handleBlockConfirm}
+        onStale={reloadVendors}
+      />
+      <UnblockAccountModal
+        isOpen={moderation.mode === "unblock"}
+        account={{
+          name: moderation.account?.ownerFullName || moderation.account?.businessName,
+          phone: moderation.account?.loginPhone,
+          blockedReason: moderation.account?.blockedReason,
+        }}
+        roleLabel="vendor"
+        onClose={closeModeration}
+        onConfirm={handleUnblockConfirm}
+        onStale={reloadVendors}
+      />
     </div>
   );
 }

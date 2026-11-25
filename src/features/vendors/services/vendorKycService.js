@@ -1,5 +1,9 @@
 import apiClient from "../../../api/axiosInstance";
 import { VENDOR_ENDPOINTS } from "../../../constants/endpoints.constants";
+import {
+  buildBlockBody,
+  buildUnblockBody,
+} from "../../accounts/services/accountModerationService";
 
 export const getVendors = async (params = {}) => {
   const response = await apiClient.get(
@@ -66,6 +70,25 @@ export const rejectVendorKyc = async (
         reason,
       },
     }
+  );
+
+  return response.data;
+};
+
+// Block / unblock use the vendor's USER id (ownerUserId), not the shop id.
+export const blockVendor = async (vendorUserId, { reason, holdPayouts = false } = {}) => {
+  const response = await apiClient.put(
+    VENDOR_ENDPOINTS.BLOCK(vendorUserId),
+    buildBlockBody({ reason, holdPayouts })
+  );
+
+  return response.data;
+};
+
+export const unblockVendor = async (vendorUserId, { note } = {}) => {
+  const response = await apiClient.put(
+    VENDOR_ENDPOINTS.UNBLOCK(vendorUserId),
+    buildUnblockBody({ note })
   );
 
   return response.data;

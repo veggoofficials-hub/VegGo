@@ -1,5 +1,9 @@
 import apiClient from '../../../api/axiosInstance';
 import { CUSTOMER_ENDPOINTS } from '../../../constants/endpoints.constants';
+import {
+  buildBlockBody,
+  buildUnblockBody,
+} from '../../accounts/services/accountModerationService';
 
 export const getCustomerStats = async () => {
   const response = await apiClient.get(
@@ -57,25 +61,24 @@ export const getCustomerDetails = async (customerUserId) => {
   return response.data;
 };
 
-export const deleteCustomer = async (customerUserId) => {
-  const response = await apiClient.delete(
-    CUSTOMER_ENDPOINTS.DELETE(customerUserId)
+// NOTE: admin delete was REMOVED (Frontend Guide §6.1). Accounts are only
+// deleted by their owners, so there is intentionally no deleteCustomer here.
+
+// Block requires a JSON body: { reason (required, max 500), holdPayouts? }
+export const blockCustomer = async (customerUserId, { reason, holdPayouts = false } = {}) => {
+  const response = await apiClient.put(
+    CUSTOMER_ENDPOINTS.BLOCK(customerUserId),
+    buildBlockBody({ reason, holdPayouts })
   );
 
   return response.data;
 };
 
-export const blockCustomer = async (customerUserId) => {
+// Unblock body is optional: { note? } (shown to the customer)
+export const unblockCustomer = async (customerUserId, { note } = {}) => {
   const response = await apiClient.put(
-    CUSTOMER_ENDPOINTS.BLOCK(customerUserId)
-  );
-
-  return response.data;
-};
-
-export const unblockCustomer = async (customerUserId) => {
-  const response = await apiClient.put(
-    CUSTOMER_ENDPOINTS.UNBLOCK(customerUserId)
+    CUSTOMER_ENDPOINTS.UNBLOCK(customerUserId),
+    buildUnblockBody({ note })
   );
 
   return response.data;

@@ -20,7 +20,6 @@ export const CUSTOMER_ENDPOINTS = Object.freeze({
   EXPORT_PDF: '/api/admin/users/customers/export/pdf',
   LEGACY_BASE: '/api/admin/customers',
   DETAILS: (customerUserId) => `/api/admin/customers/${customerUserId}`,
-  DELETE: (customerUserId) => `/api/admin/customers/${customerUserId}`,
   BLOCK: (customerUserId) => `/api/admin/customers/${customerUserId}/block`,
   UNBLOCK: (customerUserId) => `/api/admin/customers/${customerUserId}/unblock`,
   MODERATION_STATS: '/api/admin/customers/moderation/stats',
@@ -35,6 +34,9 @@ export const VENDOR_ENDPOINTS = Object.freeze({
   KYC_DETAIL: (vendorShopId) => `/api/admin/vendors/kyc/${vendorShopId}`,
   KYC_APPROVE: (vendorShopId) => `/api/admin/vendors/kyc/${vendorShopId}/approve`,
   KYC_REJECT: (vendorShopId) => `/api/admin/vendors/kyc/${vendorShopId}/reject`,
+  // Block / unblock use the account's USER id (not the shop id).
+  BLOCK: (vendorUserId) => `/api/admin/vendors/${vendorUserId}/block`,
+  UNBLOCK: (vendorUserId) => `/api/admin/vendors/${vendorUserId}/unblock`,
 });
 
 // Delivery Fleet Verification & KYC
@@ -49,6 +51,8 @@ export const DELIVERY_ENDPOINTS = Object.freeze({
   CHANGE_REQUEST_DETAIL: (requestId) => `/api/admin/delivery-partners/change-requests/${requestId}`,
   CHANGE_REQUEST_APPROVE: (requestId) => `/api/admin/delivery-partners/change-requests/${requestId}/approve`,
   CHANGE_REQUEST_REJECT: (requestId) => `/api/admin/delivery-partners/change-requests/${requestId}/reject`,
+  BLOCK: (deliveryPartnerUserId) => `/api/admin/delivery-partners/${deliveryPartnerUserId}/block`,
+  UNBLOCK: (deliveryPartnerUserId) => `/api/admin/delivery-partners/${deliveryPartnerUserId}/unblock`,
 });
 
 // Produce Catalog, Categories, and Subcategories
@@ -110,6 +114,13 @@ export const BANNER_ENDPOINTS = Object.freeze({
   STATUS: (bannerId) => `/api/admin/banners/${bannerId}/status`,
 });
 
+// Account records: block history + self-deleted accounts archive (read-only)
+export const ACCOUNT_ENDPOINTS = Object.freeze({
+  BLOCK_HISTORY: '/api/admin/blocks',
+  DELETED_ACCOUNTS: '/api/admin/deleted-accounts',
+  DELETED_ACCOUNT_BY_ID: (archiveId) => `/api/admin/deleted-accounts/${archiveId}`,
+});
+
 // Unified Endpoints Registry
 export const ENDPOINTS = Object.freeze({
   AUTH: AUTH_ENDPOINTS,
@@ -123,6 +134,7 @@ export const ENDPOINTS = Object.freeze({
   SETTINGS: SETTINGS_ENDPOINTS,
   COUPONS: COUPON_ENDPOINTS,
   BANNERS: BANNER_ENDPOINTS,
+  ACCOUNTS: ACCOUNT_ENDPOINTS,
 });
 
 export default ENDPOINTS;

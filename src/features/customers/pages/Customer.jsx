@@ -1,12 +1,19 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../../../layouts/Sidebar";
-import ConfirmModal from "../../../components/common/ConfirmModal";
 import PageHeader from "../../../components/common/PageHeader";
 import SegmentedTabs from "../../../components/common/SegmentedTabs";
 import WorkflowRulesBar from "../../../components/common/WorkflowRulesBar";
 import EmptyState from "../../../components/common/EmptyState";
 import { ROUTES } from "../../../constants/routes.constants";
+import BlockAccountModal from "../../accounts/components/BlockAccountModal";
+import UnblockAccountModal from "../../accounts/components/UnblockAccountModal";
+import {
+  BlockedReasonLine,
+  PayoutsHoldBadge,
+  ReturningUserBadge,
+} from "../../accounts/components/AccountFlags";
+import { formatDateTime, readAccountFlags } from "../../accounts/utils/accountFlags";
 import {
   UI_TABLE,
   UI_BADGES,
@@ -20,7 +27,6 @@ import {
   getCustomers,
   searchCustomers,
   getCustomerDetails,
-  deleteCustomer,
   blockCustomer,
   unblockCustomer,
   getModerationStats,
@@ -42,7 +48,6 @@ import {
   Flag,
   ShieldAlert,
   Eye,
-  Trash2,
   ShoppingBag,
   Phone,
   MapPin,
@@ -118,12 +123,10 @@ const normalizeCustomer = (item) => {
     item.phoneNumber ||
     item.user?.phone ||
     "";
-  const blocked = Boolean(
-    item.blocked === true ||
-    item.isBlocked === true ||
-    item.accountState === "BLOCKED" ||
-    item.accountState === "SUSPENDED"
-  );
+  // Block + returning-user fields (blocked, blockedReason, blockedAt,
+  // payoutsOnHold, previouslyDeleted, previousDeletionCount, lastDeletedAt)
+  const flags = readAccountFlags(item);
+  const blocked = flags.blocked;
   const accountState =
     item.accountState || (blocked ? "Blocked" : "Active");
   const verified = Boolean(
@@ -148,12 +151,14 @@ const normalizeCustomer = (item) => {
     item.reportCount ??
     0
   );
-  const flagsRaised = totalComplaints;
+  // flagsRaised = number of times an admin has blocked this customer
+  const flagsRaised = Number(item.flagsRaised ?? item.flags ?? 0) || 0;
+  // Real cancelled-order count (shown on its own in the moderation tab)
+  const cancelledOrders = Number(item.cancelledOrders) || 0;
+  // Server value is real now: the current block reason, "None", or
+  // "None (previously blocked <date>: <reason>)". No guessed labels.
   const primaryInfraction =
-    item.primaryInfraction ||
-    item.infractionReason ||
-    item.reason ||
-    (totalComplaints > 0 ? "Under Review" : "None");
+    item.primaryInfraction || (blocked && flags.blockedReason) || "None";
   const city =
     item.city ||
     item.cityOfOperation ||
@@ -169,17 +174,24 @@ const normalizeCustomer = (item) => {
     email,
     phone,
     accountState,
-    blocked,
+    ...flags,
     verified,
     registrationDate,
     totalOrders,
     totalComplaints,
     completedPurchases: totalOrders,
     flagsRaised,
+    cancelledOrders,
     primaryInfraction,
     city,
   };
 };
+
+// Allows deep links such as /management/customers?search=<phone>
+const getInitialSearch = () =>
+  typeof window === "undefined"
+    ? ""
+    : new URLSearchParams(window.location.search).get("search") || "";
 
 export default function Customer({ embedded = false }) {
   const navigate = useNavigate();
@@ -188,7 +200,7 @@ export default function Customer({ embedded = false }) {
   const [activeCustomerTab, setActiveCustomerTab] = useState("roster");
   const [isBlockedFilter, setIsBlockedFilter] = useState(false);
   const [sortOrder, setSortOrder] = useState(null); // null | "newest" | "oldest"
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(getInitialSearch);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isExportingCsv, setIsExportingCsv] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -220,7 +232,6 @@ export default function Customer({ embedded = false }) {
     account: null,
     action: null,
   });
-  const [actionLoading, setActionLoading] = useState(false);
 
   const customerTabs = [
     { id: "roster", label: "Customer Directory", icon: Users },
@@ -371,7 +382,7 @@ export default function Customer({ embedded = false }) {
     [pageSize]
   );
 
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState(() => getInitialSearch().trim());
 
   // Debounced search query watcher
   useEffect(() => {
@@ -595,20 +606,12 @@ export default function Customer({ embedded = false }) {
     setCustomerDetails(null);
   };
 
-  // Initiate status or delete actions
+  // Initiate block / unblock (account deletion by admin was removed)
   const initiateToggleStatus = (account) => {
     setModalConfig({
       isOpen: true,
       account,
       action: account.blocked ? "unblock" : "block",
-    });
-  };
-
-  const initiateDelete = (account) => {
-    setModalConfig({
-      isOpen: true,
-      account,
-      action: "delete",
     });
   };
 
@@ -620,51 +623,51 @@ export default function Customer({ embedded = false }) {
     });
   };
 
-  const handleConfirmAction = async () => {
+  const reloadCurrentView = () =>
+    fetchCustomerData(
+      activeCustomerTab,
+      currentPage,
+      searchQuery,
+      isBlockedFilter,
+      sortOrder
+    );
+
+  const finishAction = async (customerUserId) => {
+    closeModal();
+    if (customerDetails?.userId === customerUserId) {
+      setCustomerDetails(null);
+    }
+    await reloadCurrentView();
+  };
+
+  // Block needs a reason (required, max 500) and optional holdPayouts.
+  // Errors are thrown so the modal can show them inline.
+  const handleBlockConfirm = async ({ reason, holdPayouts }) => {
     const account = modalConfig.account;
-    const action = modalConfig.action;
-    if (!account) return;
-
-    const customerUserId = account.userId || account.customerId;
+    const customerUserId = account?.userId || account?.customerId;
     if (!customerUserId) {
-      setErrorMessage("Customer User ID is missing.");
-      closeModal();
-      return;
+      throw new Error("Customer User ID is missing.");
     }
 
-    try {
-      setActionLoading(true);
-      setErrorMessage("");
+    await blockCustomer(customerUserId, { reason, holdPayouts });
+    await finishAction(customerUserId);
+  };
 
-      if (action === "block") {
-        await blockCustomer(customerUserId);
-      } else if (action === "unblock") {
-        await unblockCustomer(customerUserId);
-      } else if (action === "delete") {
-        await deleteCustomer(customerUserId);
-      }
-
-      closeModal();
-      if (customerDetails?.userId === customerUserId) {
-        setCustomerDetails(null);
-      }
-      await fetchCustomerData(
-        activeCustomerTab,
-        currentPage,
-        searchQuery,
-        isBlockedFilter,
-        sortOrder
-      );
-    } catch (error) {
-      console.error(`Failed to ${action} customer:`, error);
-      setErrorMessage(
-        error?.response?.data?.message ||
-        error?.message ||
-        `Failed to ${action} customer.`
-      );
-    } finally {
-      setActionLoading(false);
+  // Unblock takes an optional note that the customer sees.
+  const handleUnblockConfirm = async ({ note }) => {
+    const account = modalConfig.account;
+    const customerUserId = account?.userId || account?.customerId;
+    if (!customerUserId) {
+      throw new Error("Customer User ID is missing.");
     }
+
+    await unblockCustomer(customerUserId, { note });
+    await finishAction(customerUserId);
+  };
+
+  // Server said the row is out of date (already blocked / not blocked / gone)
+  const handleStaleAccount = () => {
+    reloadCurrentView();
   };
 
   // Real KPI stats computation directly mapping to /api/admin/customers/stats
@@ -689,8 +692,6 @@ export default function Customer({ embedded = false }) {
     moderationStats?.suspendedOrBlocked ??
     accounts.filter((a) => a.blocked).length;
 
-  const blockedCount = accounts.filter((a) => a.blocked).length;
-  const flaggedCount = accounts.filter((a) => a.flagsRaised > 0).length;
 
   const filteredAccounts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -845,6 +846,30 @@ export default function Customer({ embedded = false }) {
         <span className="text-[11px] text-slate-400 font-medium">Restricted / blocked</span>
       </div>
     </div>
+
+    {/* Moderation stats: real counts from /api/admin/customers/moderation/stats */}
+    {activeCustomerTab === "moderation" && moderationStats && (
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="p-3.5 rounded-2xl bg-white border border-slate-200/80 shadow-2xs">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">Unrestricted users</span>
+          <span className="text-xl font-black text-slate-900">
+            <AnimatedValue value={moderationStats.unrestrictedUsers ?? 0} />
+          </span>
+        </div>
+        <div className="p-3.5 rounded-2xl bg-white border border-slate-200/80 shadow-2xs">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">Suspended / blocked</span>
+          <span className={`text-xl font-black ${(moderationStats.suspendedOrBlocked ?? 0) > 0 ? "text-rose-600" : "text-slate-900"}`}>
+            <AnimatedValue value={moderationStats.suspendedOrBlocked ?? 0} />
+          </span>
+        </div>
+        <div className="p-3.5 rounded-2xl bg-white border border-slate-200/80 shadow-2xs" title="Customers who were blocked before and are active now">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">Flagged warnings</span>
+          <span className={`text-xl font-black ${(moderationStats.flaggedWarnings ?? 0) > 0 ? "text-amber-600" : "text-slate-900"}`}>
+            <AnimatedValue value={moderationStats.flaggedWarnings ?? 0} />
+          </span>
+        </div>
+      </div>
+    )}
 
     {/* Segmented View Tabs Navigation (Directory, Moderation) */}
     <div className="bg-white p-2 rounded-2xl border border-emerald-100/80 shadow-2xs">
@@ -1040,8 +1065,9 @@ export default function Customer({ embedded = false }) {
                     </>
                   ) : (
                     <>
-                      <th className={`${UI_TABLE.thCenter} w-[16%] min-w-[120px]`}>Flags Raised</th>
-                      <th className={`${UI_TABLE.th} w-[32%] min-w-[200px]`}>Primary Infraction</th>
+                      <th className={`${UI_TABLE.thCenter} w-[12%] min-w-[110px]`}>Times Blocked</th>
+                      <th className={`${UI_TABLE.th} w-[26%] min-w-[200px]`}>Primary Infraction</th>
+                      <th className={`${UI_TABLE.thCenter} w-[12%] min-w-[110px]`}>Cancelled Orders</th>
                     </>
                   )}
 
@@ -1080,6 +1106,12 @@ export default function Customer({ embedded = false }) {
                             )}
                           </div>
                         </div>
+                        {(account.previouslyDeleted || (account.blocked && account.blockedReason)) && (
+                          <div className="mt-1.5 pl-[52px] space-y-1">
+                            <ReturningUserBadge account={account} role="CUSTOMER" phone={account.phone} />
+                            <BlockedReasonLine account={account} />
+                          </div>
+                        )}
                       </td>
 
                       {/* Tab-Specific Columns */}
@@ -1120,7 +1152,7 @@ export default function Customer({ embedded = false }) {
                           <td className={UI_TABLE.tdCenter}>
                             <span
                               className={Number(account.flagsRaised) > 0 ? UI_BADGES.counterWarning : UI_BADGES.counterNeutral}
-                              title={`${account.flagsRaised ?? 0} flags raised`}
+                              title={`Blocked ${account.flagsRaised ?? 0} time(s) by admin`}
                             >
                               <Flag size={11} className={`mr-1 shrink-0 ${Number(account.flagsRaised) > 0 ? "text-amber-600" : "text-slate-400"}`} />
                               <span>{account.flagsRaised ?? 0}</span>
@@ -1138,20 +1170,45 @@ export default function Customer({ embedded = false }) {
                               >
                                 <ShieldAlert size={13} />
                               </span>
-                              <span className="truncate text-slate-700 font-medium">
+                              <span
+                                className="truncate text-slate-700 font-medium"
+                                title={account.primaryInfraction || "None"}
+                              >
                                 {account.primaryInfraction || "None"}
                               </span>
                             </div>
+                          </td>
+
+                          {/* Cancelled Orders (real count, shown on its own) */}
+                          <td className={UI_TABLE.tdCenter}>
+                            <span
+                              className={Number(account.cancelledOrders) > 0 ? UI_BADGES.counterWarning : UI_BADGES.counterNeutral}
+                              title={`${account.cancelledOrders ?? 0} cancelled orders`}
+                            >
+                              {account.cancelledOrders ?? 0}
+                            </span>
                           </td>
                         </>
                       )}
 
                       {/* Status Column */}
                       <td className={UI_TABLE.tdCenter}>
-                        <span className={account.blocked ? UI_BADGES.statusBlocked : UI_BADGES.statusActive}>
-                          <span className={account.blocked ? UI_BADGES.statusDotBlocked : UI_BADGES.statusDotActive} />
-                          <span>{account.blocked ? "Blocked" : "Active"}</span>
-                        </span>
+                        <div className="flex flex-col items-center gap-1">
+                          <span
+                            className={account.blocked ? UI_BADGES.statusBlocked : UI_BADGES.statusActive}
+                            title={
+                              account.blocked
+                                ? account.blockedReason
+                                  ? `Reason: ${account.blockedReason}`
+                                  : "Blocked"
+                                : undefined
+                            }
+                          >
+                            <span className={account.blocked ? UI_BADGES.statusDotBlocked : UI_BADGES.statusDotActive} />
+                            <span>{account.blocked ? "Blocked" : "Active"}</span>
+                          </span>
+                          <PayoutsHoldBadge account={account} />
+                        </div>
                       </td>
 
                       {/* Actions Column */}
@@ -1175,14 +1232,14 @@ export default function Customer({ embedded = false }) {
                             className={account.blocked ? UI_BUTTONS.success : UI_BUTTONS.warning}
                             title={
                               account.blocked
-                                ? "Restore Access"
+                                ? "Unblock Customer"
                                 : "Block Customer"
                             }
                           >
                             {account.blocked ? (
                               <>
                                 <ShieldCheck size={13} />
-                                <span>Restore</span>
+                                <span>Unblock</span>
                               </>
                             ) : (
                               <>
@@ -1192,16 +1249,6 @@ export default function Customer({ embedded = false }) {
                             )}
                           </button>
 
-                          <button
-                            type="button"
-                            onClick={() => initiateDelete(account)}
-                            disabled={isRefreshing}
-                            className={UI_BUTTONS.danger}
-                            title="Delete Customer Account"
-                          >
-                            <Trash2 size={13} />
-                            <span>Delete</span>
-                          </button>
                         </div>
                       </td>
                     </tr>
@@ -1232,6 +1279,10 @@ export default function Customer({ embedded = false }) {
                           {account.phone}
                         </p>
                       )}
+                      <div className="mt-1 space-y-1">
+                        <ReturningUserBadge account={account} role="CUSTOMER" phone={account.phone} />
+                        <BlockedReasonLine account={account} />
+                      </div>
                     </div>
                   </div>
 
@@ -1279,8 +1330,20 @@ export default function Customer({ embedded = false }) {
                         <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
                           Infraction
                         </span>
-                        <span className="font-bold text-slate-900 truncate block">
+                        <span
+                          className="font-bold text-slate-900 truncate block"
+                          title={account.primaryInfraction || "None"}
+                        >
                           {account.primaryInfraction || "None"}
+                        </span>
+                      </div>
+
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between">
+                        <span className="text-[10px] uppercase font-bold text-slate-400">
+                          Cancelled Orders
+                        </span>
+                        <span className={Number(account.cancelledOrders) > 0 ? UI_BADGES.counterWarning : UI_BADGES.counterNeutral}>
+                          {account.cancelledOrders ?? 0}
                         </span>
                       </div>
                     </>
@@ -1288,7 +1351,7 @@ export default function Customer({ embedded = false }) {
                 </div>
 
                 {/* Mobile Actions */}
-                <div className="grid grid-cols-3 gap-2 pt-1">
+                <div className="grid grid-cols-2 gap-2 pt-1">
                   <button
                     onClick={() => handleViewCustomer(account)}
                     disabled={isRefreshing || detailsLoading}
@@ -1307,20 +1370,13 @@ export default function Customer({ embedded = false }) {
                   >
                     {account.blocked ? (
                       <>
-                        <ShieldCheck size={13} /> Restore
+                        <ShieldCheck size={13} /> Unblock
                       </>
                     ) : (
                       <>
                         <UserX size={13} /> Block
                       </>
                     )}
-                  </button>
-                  <button
-                    onClick={() => initiateDelete(account)}
-                    disabled={isRefreshing}
-                    className="py-2 px-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
-                  >
-                    <Trash2 size={13} /> Delete
                   </button>
                 </div>
               </div>
@@ -1366,43 +1422,30 @@ export default function Customer({ embedded = false }) {
     </section>
   </div>
 
-  {/* Confirmation Modal for Block / Unblock / Delete */ }
-  {modalConfig.isOpen && modalConfig.account && (
-      <ConfirmModal
-        isOpen={modalConfig.isOpen}
-        onClose={closeModal}
-        onConfirm={handleConfirmAction}
-        type={modalConfig.action === "unblock" ? "success" : "danger"}
-        title={
-          modalConfig.action === "delete"
-            ? "Delete Customer Account"
-            : modalConfig.action === "unblock"
-              ? "Restore Account Access"
-              : "Restrict Account Access"
-        }
-        message={
-          modalConfig.action === "delete"
-            ? `Are you sure you want to permanently delete the account of ${modalConfig.account.fullName}? This cannot be undone.`
-            : modalConfig.action === "unblock"
-              ? `Restore full platform privileges and ordering capability for ${modalConfig.account.fullName}?`
-              : `Block and suspend access for ${modalConfig.account.fullName}? They will not be able to log in or checkout.`
-        }
-        confirmText={
-          modalConfig.action === "delete"
-            ? actionLoading
-              ? "Deleting..."
-              : "Yes, Delete Account"
-            : modalConfig.action === "unblock"
-              ? actionLoading
-                ? "Restoring..."
-                : "Yes, Restore Access"
-              : actionLoading
-                ? "Blocking..."
-                : "Yes, Block Account"
-        }
-        cancelText="Cancel"
-      />
-    )}
+  {/* Block (reason required) / Unblock (note optional) modals */ }
+  <BlockAccountModal
+    isOpen={modalConfig.isOpen && modalConfig.action === "block"}
+    account={{
+      name: modalConfig.account?.fullName,
+      phone: modalConfig.account?.phone,
+    }}
+    roleLabel="customer"
+    onClose={closeModal}
+    onConfirm={handleBlockConfirm}
+    onStale={handleStaleAccount}
+  />
+  <UnblockAccountModal
+    isOpen={modalConfig.isOpen && modalConfig.action === "unblock"}
+    account={{
+      name: modalConfig.account?.fullName,
+      phone: modalConfig.account?.phone,
+      blockedReason: modalConfig.account?.blockedReason,
+    }}
+    roleLabel="customer"
+    onClose={closeModal}
+    onConfirm={handleUnblockConfirm}
+    onStale={handleStaleAccount}
+  />
 
   {/* Complete Customer Details Modal */ }
   {
@@ -1567,7 +1610,29 @@ export default function Customer({ embedded = false }) {
                       ? "Verified Identity"
                       : "Standard Profile"}
                   </span>
+
+                  <ReturningUserBadge
+                    account={customerDetails}
+                    role="CUSTOMER"
+                    phone={customerDetails.phone}
+                    className="!px-3 !py-1 !text-xs"
+                  />
                 </div>
+
+                {customerDetails.blocked && (
+                  <div className="mt-1 p-3 rounded-2xl bg-rose-50 border border-rose-100 text-xs space-y-1">
+                    <span className="block text-[10px] uppercase font-bold tracking-wider text-rose-500">
+                      Blocked
+                      {customerDetails.blockedAt
+                        ? ` since ${formatDateTime(customerDetails.blockedAt)}`
+                        : ""}
+                    </span>
+                    <span className="block font-semibold text-rose-900 break-words">
+                      {customerDetails.blockedReason || "No reason recorded"}
+                    </span>
+                    <PayoutsHoldBadge account={customerDetails} />
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -1588,17 +1653,10 @@ export default function Customer({ embedded = false }) {
                   <UserX size={15} />
                 )}
                 {customerDetails.blocked
-                  ? "Restore Access"
-                  : "Block Access"}
+                  ? "Unblock Customer"
+                  : "Block Customer"}
               </button>
 
-              <button
-                onClick={() => initiateDelete(customerDetails)}
-                className="px-4 py-2.5 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 text-xs font-bold flex items-center gap-2 cursor-pointer transition-all"
-              >
-                <Trash2 size={15} />
-                Delete Account
-              </button>
             </div>
 
             <button

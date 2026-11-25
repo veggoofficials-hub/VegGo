@@ -1,5 +1,9 @@
 import apiClient from "../../../api/axiosInstance";
 import { DELIVERY_ENDPOINTS } from "../../../constants/endpoints.constants";
+import {
+  buildBlockBody,
+  buildUnblockBody,
+} from "../../accounts/services/accountModerationService";
 
 // Get All Delivery Partners
 // params: search, kycStatus, applicationState (DRAFT | UNDER_REVIEW | APPROVED | REJECTED),
@@ -89,6 +93,25 @@ export const exportDeliveryPdf = async (params = {}) => {
       params,
       responseType: "blob",
     }
+  );
+
+  return response.data;
+};
+
+// Block / unblock use the rider's USER id.
+export const blockDeliveryPartner = async (deliveryPartnerUserId, { reason, holdPayouts = false } = {}) => {
+  const response = await apiClient.put(
+    DELIVERY_ENDPOINTS.BLOCK(deliveryPartnerUserId),
+    buildBlockBody({ reason, holdPayouts })
+  );
+
+  return response.data;
+};
+
+export const unblockDeliveryPartner = async (deliveryPartnerUserId, { note } = {}) => {
+  const response = await apiClient.put(
+    DELIVERY_ENDPOINTS.UNBLOCK(deliveryPartnerUserId),
+    buildUnblockBody({ note })
   );
 
   return response.data;
